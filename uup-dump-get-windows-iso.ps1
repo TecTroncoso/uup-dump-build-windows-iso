@@ -181,7 +181,7 @@ L2: Got preview=true."
       }
       $_.Value | Add-Member -NotePropertyMembers @{ langs = $result.response.langFancyNames; info = $result.response.updateInfo }
 
-      $langs = $_.Value.langs.PSObject.Properties.Name
+      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties.Name) }
       $eds = if ($langs -contains $lang) {
         Write-CleanLine "Getting the $name $id editions metadata"
         $result = Invoke-UupDumpApi listeditions @{ id = $id; lang = $lang }
@@ -196,8 +196,8 @@ L4: Got langs=$($langs -join ',')."
       $_
     }
   | Where-Object {
-      $langs = $_.Value.langs.PSObject.Properties.Name
-      $editions = $_.Value.editions.PSObject.Properties.Name
+      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties.Name) }
+      $editions = if ($_.Value.editions -is [array]) { @() } else { @($_.Value.editions.PSObject.Properties.Name) }
       $res = $true
 
       $expectedRing = if ($ringLower) { $ringLower.ToUpper() } else { 'RETAIL' }
