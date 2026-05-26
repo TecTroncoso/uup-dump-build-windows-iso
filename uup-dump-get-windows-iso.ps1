@@ -123,7 +123,7 @@ $TARGETS = @{
   "windows-11new"    = @{ search="windows 11 26200$dotSystemRevision $arch"; edition=(Get-EditionName $edition) }
   "windows-11beta"   = @{ search="windows 11 26120$dotSystemRevision $arch"; edition=(Get-EditionName $edition); ring="Beta" }
   "windows-11dev"    = @{ search="windows 11 26220$dotSystemRevision $arch"; edition=(Get-EditionName $edition); ring="Wif" }
-  "windows-1126h1"   = @{ search="windows 11 28000$dotSystemRevision $arch"; edition=(Get-EditionName $edition) }
+  "windows-1126h2"   = @{ search="windows 11 26300$dotSystemRevision $arch"; edition=(Get-EditionName $edition); ring="Wif" } # Cambiar a "RETAIL" cuando 26H2 sea lanzamiento general
   "windows-dev"      = @{ search="windows 11 26300$dotSystemRevision $arch"; edition=(Get-EditionName $edition); ring="Dev" }
   "windows-canary"   = @{ search="windows 11$systemRevision $arch"; edition=(Get-EditionName $edition); ring="Canary" }
 }
@@ -203,6 +203,16 @@ L4: Got langs=$($langs -join ',')."
       $expectedRing = if ($ringLower) { $ringLower.ToUpper() } else { 'RETAIL' }
       if ($ringLower) {
         $actual = ($_.Value.info.ring).ToUpper()
+        # --- INICIO: Lógica especial para 26H2 ---
+        if ($name -eq "windows-1126h2") {
+            # Para 26H2, permitir tanto Wif (Insider) como RETAIL (GA)
+            $ok = ($actual -eq "WIF") -or ($actual -eq "RETAIL")
+            if (-not $ok) {
+                Write-CleanLine "Skipping. 26H2 must be WIF or RETAIL. Got ring=$actual."
+                $res = $false
+            }
+        }
+        # --- FIN: Lógica especial para 26H2 ---
         if ($ringLower -in @('dev','beta')) {
           if ($actual -notin @($expectedRing, 'WIF', 'WIS')) {
             Write-CleanLine "Skipping.
