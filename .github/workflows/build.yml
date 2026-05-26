@@ -1,0 +1,491 @@
+name: Build Windows
+run-name: >
+  ${{ inputs.versions }}
+  ${{ fromJSON('{"Pro":"PRO","Home":"HOME","Multi":"MULTI"}')[inputs.edition] }}
+  ${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}
+  ${{ fromJSON('{"Spanish (Spain)":"ES","Spanish (Mexico)":"ES"}')[inputs.language] }}
+  ${{ inputs.esd && 'ESD' || '' }}
+  ${{ inputs.netfx3 && 'NETFX3' || '' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: "Windows architecture to build"
+        type: choice
+        options: [x64, arm64]
+        default: x64
+        required: true
+      versions:
+        description: "Windows version to build"
+        type: choice
+        options:
+          - Windows 10 22H2
+          - Windows 11 23H2
+          - Windows 11 24H2
+          - Windows 11 24H2 BETA
+          - Windows 11 25H2
+          - Windows 11 25H2 BETA
+          - Windows 11 26H1
+          - Windows DEV
+          - Windows CANARY
+        default: Windows 11 25H2
+        required: true
+      edition:
+        description: "Windows edition to build"
+        type: choice
+        options: [Pro, Home, Multi]
+        default: Pro
+        required: true
+      language:
+        description: "Language"
+        type: choice
+        options:
+          - Spanish (Spain)
+          - Spanish (Mexico)
+        default: Spanish (Spain)
+        required: true
+      revision:
+        description: "Revision number (optional)"
+        type: string
+        required: false
+      custom_search:
+        description: "Búsqueda exacta (ej: 22631.3593 o UUID). Si se usa, ignora Version/Revision."
+        type: string
+        required: false
+      esd:
+        description: "Use ESD compression"
+        type: boolean
+        required: true
+        default: false
+      netfx3:
+        description: "Add .NET Framework 3.5"
+        type: boolean
+        required: true
+        default: false
+
+jobs:
+  build:
+    runs-on: ${{ fromJSON('{"x64":"windows-latest","arm64":"windows-11-arm"}')[inputs.architecture] }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Map inputs
+        id: map
+        shell: pwsh
+        run: |
+          $langMap = @{
+            'Spanish (Spain)'='es-es'
+            'Spanish (Mexico)'='es-mx'
+          }
+
+          $verMap = @{
+            'Windows 10 22H2'      = 'windows-10'
+            'Windows 11 23H2'      = 'windows-11old'
+            'Windows 11 24H2'      = 'windows-11'
+            'Windows 11 24H2 BETA' = 'windows-11beta'
+            'Windows 11 25H2'      = 'windows-11new'
+            'Windows 11 25H2 BETA' = 'windows-11dev'
+            'Windows 11 26H1'      = 'windows-1126h1'
+            'Windows DEV'          = 'windows-dev'
+            'Windows CANARY'       = 'windows-canary'
+          }
+
+          $langCode = $langMap['${{ inputs.language }}']
+          $verCode  = $verMap['${{ inputs.versions }}']
+
+          $opts = ''
+          if ('${{ inputs.esd }}' -eq 'true')     { $opts += ' -esd' }
+          if ('${{ inputs.netfx3 }}' -eq 'true')  { $opts += ' -netfx3' }
+          
+          if (-not [string]::IsNullOrWhiteSpace('${{ inputs.revision }}')) {
+            $opts += ' -revision "${{ inputs.revision }}"'
+          }
+          if (-not [string]::IsNullOrWhiteSpace('${{ inputs.custom_search }}')) {
+            $opts += ' -customSearch "${{ inputs.custom_search }}"'
+          }
+          
+          $opts = $opts.Trim()
+
+          echo "lang=$langCode"    >> $env:GITHUB_OUTPUT
+          echo "version=$verCode"  >> $env:GITHUB_OUTPUT
+          if ($opts) {
+            echo "options=$opts"   >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build Windows
+        id: build_windows
+        shell: pwsh
+        run: |
+          pwsh uup-dump-get-windows-iso.ps1 ${{ steps.map.outputs.version }} ${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }} -architecture ${{ inputs.architecture }} -edition ${{ inputs.edition }} -lang ${{ steps.map.outputs.lang }} ${{ steps.map.outputs.options }}
+          echo "iso_name=$env:ISO_NAME" >> $env:GITHUB_OUTPUT
+
+      - name: Create split zip
+        shell: pwsh
+        run: |
+          7z a -tzip -mx=0 -v1950M -bsp2 "${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }}/$($env:ISO_NAME).zip" "$((Get-Item -Path '${{ inputs.architecture == 'arm64' && 'C:/output' || 'D:/output' }}/*.ISO').FullName)"
+          Get-ChildItem "${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }}/$($env:ISO_NAME).zip.*" | Sort-Object Name | ForEach-Object { Write-Host "Created: $($_.FullName)" }
+
+      - name: Upload ISO artifact
+        id: upload_iso_artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ISO_NAME }}
+          path: ${{ inputs.architecture == 'arm64' && 'c:/output/*.ISO' || 'd:/output/*.ISO' }}
+          if-no-files-found: error
+
+      - name: Set artifact_url
+        id: set_artifact_url
+        shell: pwsh
+        run: echo "artifact_url=${{ steps.upload_iso_artifact.outputs.artifact-url }}" >> $env:GITHUB_ENV
+
+      - name: Build summary
+        id: build_summary
+        shell: pwsh
+        run: |
+          $iso = Get-Content (Resolve-Path '${{ inputs.architecture == 'arm64' && 'c:/output' || 'd:/output' }}/*.json') | ConvertFrom-Json
+          $imageNames = $iso.images | ForEach-Object { $_.name }
+          if ($imageNames.Count -gt 1) {
+            if ($imageNames[0] -match '^(Windows (10|11))\s*(.*)') {
+              $prefix = $matches[1]
+              $first = $imageNames[0]
+              $rest = $imageNames[1..($imageNames.Count - 1)] | ForEach-Object { ($_ -replace "^$prefix\s*", '') }
+              $finalImageName = $first + '/' + ($rest -join '/')
+            } else {
+              $finalImageName = $imageNames -join '/'
+            }
+          } else {
+            $finalImageName = $imageNames
+          }
+
+          $parts = Get-ChildItem "${{ inputs.architecture == 'arm64' && 'C:/output' || 'D:/output' }}/$($env:ISO_NAME).zip.0*" | Sort-Object Name
+          $partsList = ($parts | ForEach-Object { $_.Name }) -join '  <br/>'
+
+          $opts = '${{ steps.map.outputs.options }}'
+          $optsRow = $null
+          if (-not [string]::IsNullOrWhiteSpace($opts)) {
+            $descMap = @{
+              '-esd'     = 'Use ESD compression'
+              '-netfx3'  = 'Add .NET Framework 3.5'
+            }
+            $items = $opts -split '\s+' |
+              Where-Object { $_ -and $_.Trim() -ne '' } |
+              ForEach-Object {
+                $k = $_.ToLower()
+                if ($descMap.ContainsKey($k)) { $descMap[$k] } else { $_.TrimStart('-') }
+              } | Select-Object -Unique
+
+            if ($items.Count -gt 0) {
+              $optsFormatted = ($items | ForEach-Object { "<li>$($_)</li>" }) -join ''
+              $optsRow = "| Build config | <ul>$optsFormatted</ul> |"
+            }
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY @"
+          ### FILE INFO:
+          | Property | Value |
+          | :--- | :--- |
+          | Name | $finalImageName $($iso.version) |
+          | Build | $($iso.build) |
+          | Architecture | ${{ inputs.architecture }} |
+          | Language | ${{ inputs.language }} |
+          "@
+
+          if ($optsRow) {
+            Add-Content $env:GITHUB_STEP_SUMMARY $optsRow
+          }
+
+          Add-Content $env:GITHUB_STEP_SUMMARY @"
+          | Checksum | $($iso.checksum) |
+          | Iso | [$env:ISO_NAME]($env:artifact_url) |
+          | UUP dump | [$($iso.title)]($($iso.uupDump.downloadUrl)) |
+          "@
+
+          $rlsnfo = @"
+
+          ## RELEASE INFO
+          > [!NOTE]
+          > File is splitted because Github release limit filesize to 2G.
+          > You must download all files **$env:ISO_NAME.zip.xxx** *(where xxx is number of archive)*
+          > If You have all files you can extract files.
+
+          > [!TIP]
+          > For example on windows with 7-Zip:
+          > - Extract (GUI): ``Open **$env:ISO_NAME.zip.001** in 7-Zip and extract.``
+          > - Extract (CLI): ``7z x $env:ISO_NAME.zip.001``
+
+          > [!CAUTION]
+          > Remember on Linux/MacOS set ``chmod +x`` to *.sh file before run!
+          "@
+
+          ((Get-Content $env:GITHUB_STEP_SUMMARY) + "<br/>" + $rlsnfo) | Set-Content summary.md
+          echo "build=$($iso.build)" >> $env:GITHUB_ENV
+          echo "version=$($iso.version)" >> $env:GITHUB_ENV
+          echo "name=$($iso.name)" >> $env:GITHUB_ENV
+          echo "title=$($iso.title)" >> $env:GITHUB_ENV
+          echo "images=$($finalImageName)" >> $env:GITHUB_ENV
+          echo "iso_checksum=$($iso.checksum)" >> $env:GITHUB_ENV
+          echo "tagname=$($iso.build).$($iso.version).${{ fromJSON('{"Pro":"PRO","Home":"HOME","Multi":"MULTI"}')[inputs.edition] }}.${{ fromJSON('{"x64":"X64","arm64":"ARM64"}')[inputs.architecture] }}.${{ fromJSON('{"es-es":"ES","es-mx":"ES"}')[steps.map.outputs.lang] }}$($iso.tags)" >> $env:GITHUB_ENV
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2.6.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: "${{ env.tagname }}"
+          name: "${{ env.images }} ${{ inputs.architecture}} ${{ env.version }} (${{ env.build }})"
+          body_path: summary.md
+          draft: false
+          prerelease: ${{ !contains(fromJson('["Windows 10 22H2","Windows 11 23H2","Windows 11 24H2","Windows 11 25H2","Windows 11 26H1"]'), inputs.versions) }}
+          files: |
+            ${{ inputs.architecture == 'arm64' && 'C:/output/*.zip.0*' || 'D:/output/*.zip.0*' }}
+
+      - name: Generate platform packages
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tag = "${{ env.tagname }}"
+          if (-not $tag) { $tag = gh release view --json tagName -q '.tagName' }
+          if (-not $tag) { throw "Cannot resolve release tag." }
+
+          $owner,$repo = $env:GITHUB_REPOSITORY.Split('/')
+
+          $ws   = $env:GITHUB_WORKSPACE
+          $dist = Join-Path $ws "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          $localParts = Get-ChildItem "${{ inputs.architecture == 'arm64' && 'C:/output' || 'D:/output' }}/${{ env.ISO_NAME }}.zip.0*" -File | Sort-Object Name
+          if (-not $localParts) { throw "No local split parts found in ${{ inputs.architecture == 'arm64' && 'C:/output' || 'D:/output' }}/${{ env.ISO_NAME }}.zip.0**" }
+
+          $partsLines = @()
+          foreach ($p in $localParts) {
+            $sha = (Get-FileHash -Algorithm SHA256 $p.FullName).Hash.ToLowerInvariant()
+            $downloadUrl = "https://github.com/$owner/$repo/releases/download/$tag/$($p.Name)"
+            $partsLines += $downloadUrl
+            $partsLines += "  checksum=sha-256=$sha"
+            $partsLines += "  out=$($p.Name)"
+          }
+
+          $utils = Join-Path $ws "Utils"
+
+          function New-BAT {
+            param([string]$destDir, [string[]]$PartsLines)
+            $emitParts = @()
+            foreach ($ln in $PartsLines) { $emitParts += '  echo(' + $ln }
+            $lines = @(
+              '@echo off',
+              'setlocal ENABLEDELAYEDEXPANSION',
+              '',
+              'set "OutputDir=%~1"',
+              'if not defined OutputDir set "OutputDir=."',
+              '',
+              'set "HERE=%~dp0"',
+              'set "TMPDIR=%TEMP%\uup_parts_%RANDOM%%RANDOM%"',
+              'mkdir "%TMPDIR%" >nul 2>&1',
+              'set "LIST=%TMPDIR%\parts.txt"',
+              'set "ARIA=%HERE%bin\aria2c.exe"',
+              'set "SEVENZIP=%HERE%bin\7za.exe"',
+              '',
+              'if not exist "%ARIA%"  (echo ERROR: missing bin\aria2c.exe & exit /b 1)',
+              'if not exist "%SEVENZIP%" (echo ERROR: missing bin\7za.exe & exit /b 1)',
+              '',
+              'rem Write embedded parts',
+              '( '
+            ) + $emitParts + @(
+              ') > "%TMPDIR%\parts.txt"',
+              '',
+              'echo Starting download parts with Aria2',
+              'echo.',
+              '"%ARIA%" --input-file="%LIST%" --dir="%OutputDir%" --auto-file-renaming=false --allow-overwrite=true --continue=true --max-concurrent-downloads=16 --split=16 --min-split-size=1M --check-integrity=true --console-log-level=warn --summary-interval=30 --file-allocation=none',
+              'if errorlevel 1 (echo ERROR: aria2 download failed & exit /b 1)',
+              '',
+              'for /f "delims=" %%P in (''dir /b /a:-d "%OutputDir%\*.zip.001" 2^>nul'') do set "FIRST=%%P"',
+              'if not defined FIRST (echo ERROR: No *.zip.001 found & exit /b 1)',
+              '',
+              'echo Extracting ISO with 7z',
+              'echo.',
+              '"%SEVENZIP%" x "%OutputDir%\%FIRST%" -o"%OutputDir%" -y -bsp1 -bso0',
+              '',
+              'for /f "delims=" %%I in (''dir /b /a:-d "%OutputDir%\*.ISO" 2^>nul'') do set "ISO=%%I"',
+              'if not defined ISO (echo ERROR: ISO not found & exit /b 1)',
+              '',
+              'echo ISO saved: %ISO%',
+              'echo.',
+              'echo Done',
+              'echo.',
+              'pause',
+              'exit /b 0'
+            )
+            $path = Join-Path $destDir 'get-with-aria2.cmd'
+            Set-Content -Path $path -Value ($lines -join "`r`n") -Encoding ASCII
+          }
+
+          function New-SH {
+            param([string]$destDir, [string[]]$PartsLines)
+            $lines = @(
+              '#!/bin/sh',
+              'set -eu',
+              '',
+              'SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)',
+              'LAUNCH_DIR=$(pwd)',
+              'TMPDIR="$LAUNCH_DIR/tmp_dir"',
+              'LIST_FILE="$TMPDIR/parts.txt"',
+              'ARIA2_BIN="$SCRIPT_DIR/bin/aria2c"',
+              'ARIA2="$ARIA2_BIN"',
+              'SEVEN_ZIP=""',
+              'mkdir -p "$TMPDIR"',
+              'find "$SCRIPT_DIR/bin/" -type f -exec chmod +x {} \;',
+              '',
+              'for c in "$SCRIPT_DIR/bin/7zzs" "$SCRIPT_DIR/bin/7z" "$SCRIPT_DIR/bin/7za" "$SCRIPT_DIR/bin/7zz"; do',
+              '  if [ -x "$c" ] && "$c" i >/dev/null 2>&1; then SEVEN_ZIP="$c"; break; fi',
+              'done',
+              '',
+              'if [ -x "$ARIA2" ] && "$ARIA2" --version >/dev/null 2>&1; then',
+              '  :',
+              'else',
+              '  if command -v aria2c >/dev/null 2>&1; then',
+              '    ARIA2=$(command -v aria2c)',
+              '    echo "Using system aria2c from: $ARIA2"',
+              '  else',
+              '    echo "ERROR: aria2c binary not available" >&2',
+              '    exit 1',
+              '  fi',
+              'fi',
+              '',
+              'cat > "$LIST_FILE" << "EOF_PARTS"'
+            ) + ($PartsLines -join "`n") + @(
+              'EOF_PARTS',
+              '',
+              'echo "Starting download of parts with aria2c"',
+              '"$ARIA2" --input-file="$LIST_FILE" --dir="$TMPDIR" --auto-file-renaming=false --allow-overwrite=true --continue=true --max-concurrent-downloads=16 --split=16 --min-split-size=1M --check-integrity=true --console-log-level=warn --summary-interval=30 --file-allocation=none',
+              '',
+              'firstpart=""',
+              'for f in "$TMPDIR"/*.zip.001; do',
+              '  if [ -f "$f" ]; then firstpart="$f"; break; fi',
+              'done',
+              '[ -n "$firstpart" ] || { echo "ERROR: No *.zip.001 found" >&2; exit 1; }',
+              '',
+              'if [ -n "$SEVEN_ZIP" ]; then',
+              '  echo "Extracting ISO with 7z"',
+              '  "$SEVEN_ZIP" x "$firstpart" -o"$TMPDIR" -y -bsp1 -bso0',
+              'else',
+              '  echo "7z binary unavailable; combining parts and extracting with unzip"',
+              '  command -v unzip >/dev/null 2>&1 || { echo "ERROR: unzip not available for fallback" >&2; exit 1; }',
+              '  combined_zip="$TMPDIR/combined.zip"',
+              '  rm -f "$combined_zip"',
+              '  part_prefix="${firstpart%???}"',
+              '  parts_found=0',
+              '  for part in "${part_prefix}"???; do',
+              '    [ -f "$part" ] || continue',
+              '    cat "$part" >> "$combined_zip"',
+              '    parts_found=$((parts_found + 1))',
+              '  done',
+              '  [ "$parts_found" -gt 0 ] || { echo "ERROR: No zip parts found for fallback extraction" >&2; exit 1; }',
+              '  unzip -o "$combined_zip" -d "$TMPDIR" >/dev/null',
+              'fi',
+              '',
+              'iso=""',
+              'for f in "$TMPDIR"/*.ISO "$TMPDIR"/*.iso; do',
+              '  if [ -f "$f" ]; then iso="$f"; break; fi',
+              'done',
+              '[ -n "$iso" ] || { echo "ERROR: ISO not found" >&2; exit 1; }',
+              '',
+              'dest="$LAUNCH_DIR/$(basename "$iso")"',
+              'mv -f "$iso" "$dest"',
+              'echo "ISO saved to: $(basename "$dest")"',
+              '',
+              'rm -rf "$TMPDIR"',
+              '',
+              'exit 0'
+            )
+
+            $path = Join-Path $destDir 'get-with-aria2.sh'
+            $body = ($lines -join "`n")
+            $body = $body -replace "`r",""
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText($path, $body, $utf8NoBom)
+          }
+
+          function Copy-Platform {
+            param([string]$platform,[string]$arch,[string]$zipName)
+            $pkgDir = Join-Path $dist ("pkg-" + $platform + "-" + $arch)
+            $binDir = Join-Path $pkgDir "bin"
+            New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+            switch ("$platform-$arch") {
+              'windows-x64' {
+                Copy-Item (Join-Path $utils 'aria2/windows-x64/aria2c.exe') $binDir -Force
+                Copy-Item (Join-Path $utils '7z/windows-x64/7za.exe')       $binDir -Force
+                New-BAT -destDir $pkgDir -PartsLines $partsLines
+              }
+              'windows-arm64' {
+                Copy-Item (Join-Path $utils 'aria2/windows-arm64/aria2c.exe') $binDir -Force
+                Copy-Item (Join-Path $utils '7z/windows-arm64/7za.exe')       $binDir -Force
+                New-BAT -destDir $pkgDir -PartsLines $partsLines
+              }
+              'linux-x64' {
+                Get-ChildItem (Join-Path $utils 'aria2/linux-x64') -Filter 'aria2c*' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                Get-ChildItem (Join-Path $utils '7z/linux-x64')    -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                & bash -lc "chmod +x '$binDir/*' 2>/dev/null || true"
+                New-SH -destDir $pkgDir -PartsLines $partsLines
+              }
+              'linux-arm' {
+                Get-ChildItem (Join-Path $utils 'aria2/linux-arm') -Filter 'aria2c*' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                Get-ChildItem (Join-Path $utils '7z/linux-arm')    -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                & bash -lc "chmod +x '$binDir/*' 2>/dev/null || true"
+                New-SH -destDir $pkgDir -PartsLines $partsLines
+              }
+              'linux-arm64' {
+                Get-ChildItem (Join-Path $utils 'aria2/linux-arm64') -Filter 'aria2c*' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                Get-ChildItem (Join-Path $utils '7z/linux-arm64')    -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                & bash -lc "chmod +x '$binDir/*' 2>/dev/null || true"
+                New-SH -destDir $pkgDir -PartsLines $partsLines
+              }
+              'macos-universal' {
+                Get-ChildItem (Join-Path $utils 'aria2/macos-universal') -Filter 'aria2c*' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                Get-ChildItem (Join-Path $utils '7z/macos-universal')    -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*.exe' } | Copy-Item -Destination $binDir -Force
+                & bash -lc "chmod +x '$binDir/*' 2>/dev/null || true"
+                New-SH -destDir $pkgDir -PartsLines $partsLines
+              }
+            }
+
+            $zipPath = Join-Path $dist $zipName
+            if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+            Compress-Archive -Path (Join-Path $pkgDir '*') -DestinationPath $zipPath -Force
+          }
+
+          Copy-Platform -platform 'windows' -arch 'x64'       -zipName 'isoautodl-windows-x64.zip'
+          Copy-Platform -platform 'windows' -arch 'arm64'     -zipName 'isoautodl-windows-arm64.zip'
+          Copy-Platform -platform 'linux'   -arch 'x64'       -zipName 'isoautodl-linux-x64.zip'
+          Copy-Platform -platform 'linux'   -arch 'arm'       -zipName 'isoautodl-linux-arm.zip'
+          Copy-Platform -platform 'linux'   -arch 'arm64'     -zipName 'isoautodl-linux-arm64.zip'
+          Copy-Platform -platform 'macos'   -arch 'universal' -zipName 'isoautodl-macos-universal.zip'
+
+      - name: Upload platform ZIPs to Release
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "${{ env.tagname }}"
+          if (-not $tag) { $tag = gh release view --json tagName -q '.tagName' }
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist"
+          $files = @(
+            "isoautodl-windows-x64.zip",
+            "isoautodl-windows-arm64.zip",
+            "isoautodl-linux-x64.zip",
+            "isoautodl-linux-arm.zip",
+            "isoautodl-linux-arm64.zip",
+            "isoautodl-macos-universal.zip"
+          ) | ForEach-Object { Join-Path $dist $_ }
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) { throw "ZIP not found: $f" }
+            gh release upload $tag "$f" --clobber
+          }
