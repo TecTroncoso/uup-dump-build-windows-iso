@@ -181,7 +181,7 @@ L2: Got preview=true."
       }
       $_.Value | Add-Member -NotePropertyMembers @{ langs = $result.response.langFancyNames; info = $result.response.updateInfo }
 
-      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties.Name) }
+      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties | ForEach-Object Name) }
       $eds = if ($langs -contains $lang) {
         Write-CleanLine "Getting the $name $id editions metadata"
         $result = Invoke-UupDumpApi listeditions @{ id = $id; lang = $lang }
@@ -190,14 +190,14 @@ L2: Got preview=true."
         Write-CleanLine "Skipping.
 L3: Expected langs=$lang.
 L4: Got langs=$($langs -join ',')."
-        [PSCustomObject]@{}
+        @()
       }
       $_.Value | Add-Member -NotePropertyMembers @{ editions = $eds }
       $_
     }
   | Where-Object {
-      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties.Name) }
-      $editions = if ($_.Value.editions -is [array]) { @() } else { @($_.Value.editions.PSObject.Properties.Name) }
+      $langs = if ($_.Value.langs -is [array]) { @() } else { @($_.Value.langs.PSObject.Properties | ForEach-Object Name) }
+      $editions = if ($_.Value.editions -is [array]) { @() } else { @($_.Value.editions.PSObject.Properties | ForEach-Object Name) }
       $res = $true
 
       $expectedRing = if ($ringLower) { $ringLower.ToUpper() } else { 'RETAIL' }
