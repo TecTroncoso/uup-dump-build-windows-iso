@@ -99,9 +99,14 @@ function Process-ProgressLine([string]$line) {
 # ------------------------------
 $arch = if ($architecture -eq "x64") { "amd64" } else { "arm64" }
 
-if ($windowsTargetName -match 'beta|dev|wif|canary') {
-  $preview = $true
-  $ringLower = @('beta','dev','wif','canary').Where({$windowsTargetName -match $_})[0]
+if ($windowsTargetName -match 'beta|dev|wif|canary|26h1|26h2') {
+    $preview = $true
+    $ringLower = @('beta','dev','wif','canary').Where({$windowsTargetName -match $_})[0]
+    
+    # Forzar el anillo a Wif para 26H1 y 26H2, ya que actualmente son Insider Preview
+    if ($windowsTargetName -match '26h1|26h2') { 
+        $ringLower = 'wif' 
+    }
 }
 
 function Get-EditionName($e) {
