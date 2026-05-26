@@ -4,3 +4,6 @@ Venv/
 
 # Editor
 .vscode/
+
+# Scripts
+abrir_proyecto.bat
