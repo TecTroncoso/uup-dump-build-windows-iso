@@ -71,6 +71,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Liberar espacio en el servidor de GitHub
+        shell: pwsh
+        run: |
+          Write-Host "Borrando software inútil del servidor para hacer espacio..."
+          Remove-Item -Path "C:\Android" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\hostedtoolcache\windows\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path "C:\ProgramData\Docker" -Recurse -Force -ErrorAction SilentlyContinue
+
       - name: Map inputs
         id: map
         shell: pwsh
