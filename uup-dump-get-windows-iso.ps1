@@ -101,11 +101,13 @@ $arch = if ($architecture -eq "x64") { "amd64" } else { "arm64" }
 
 if ($windowsTargetName -match 'beta|dev|wif|canary|26h1|26h2') {
     $preview = $true
-    $ringLower = @('beta','dev','wif','canary').Where({$windowsTargetName -match $_})[0]
     
-    # Forzar el anillo a Wif para 26H1 y 26H2, ya que actualmente son Insider Preview
+    # Primero forzamos el anillo para 26H1 y 26H2
     if ($windowsTargetName -match '26h1|26h2') { 
         $ringLower = 'wif' 
+    } else {
+        # Si no es 26H1/H2, buscamos en el array original de la misma forma que antes
+        $ringLower = @('beta','dev','wif','canary').Where({$windowsTargetName -match $_})[0]
     }
 }
 
